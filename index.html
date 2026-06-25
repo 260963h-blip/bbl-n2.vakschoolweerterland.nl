@@ -196,11 +196,21 @@
   .btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-hover); }
   .btn-primary { background: var(--blue); color: #fff; }
   .btn-secondary { background: #fff; color: var(--gray-600); border: 1px solid var(--gray-200); }
+  .btn-sm { padding: 8px 13px; font-size: 12px; }
+
+  /* SYNC-BALK (gedeelde aantekeningen) */
+  .sync-bar { position: fixed; bottom: 20px; left: 20px; z-index: 50; display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--gray-200); border-radius: 10px; padding: 9px 12px; box-shadow: var(--shadow); max-width: min(92vw, 520px); }
+  .sync-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gray-400); flex-shrink: 0; }
+  .sync-dot.ok { background: #1f9d57; }
+  .sync-dot.dirty { background: var(--orange); }
+  .sync-dot.err { background: var(--red-mid); }
+  .sync-text { font-size: 12px; color: var(--gray-600); font-weight: 500; line-height: 1.3; flex: 1; min-width: 120px; }
 
   .site-footer { background: var(--gray-100); border-top: 1px solid var(--gray-200); padding: 22px 32px; text-align: center; font-size: 12px; color: var(--gray-400); line-height: 1.6; }
 
   @media print {
     .action-bar { display: none; }
+    .sync-bar { display: none; }
     .col-header-bar { position: static; }
     .cell, .rol-card { box-shadow: none; }
     body { background: #fff; }
@@ -3984,9 +3994,16 @@
   Afstemdocument voor de praktijkwerkgroep en de leerbedrijven. Theorie volgt het programma van Gilde (di + do ochtend). De praktijkmiddagen realiseren de beroepstaak; voorstellen in de oranje kolom zijn startpunt voor het gesprek. Locatie praktijkmiddag: bij een bedrijf of op Het Kwadrant, nader in te vullen.
 </footer>
 
+<div class="sync-bar">
+  <span class="sync-dot" id="syncDot"></span>
+  <span class="sync-text" id="syncText">Verbinden…</span>
+  <button class="btn btn-secondary btn-sm" id="btnOphalen">🔄 Ophalen</button>
+  <button class="btn btn-primary btn-sm" id="btnPubliceren">☁️ Publiceren</button>
+</div>
+
 <div class="action-bar">
   <button class="btn btn-secondary" onclick="window.print()">🖨️ Afdrukken / PDF</button>
-  <button class="btn btn-primary" onclick="saveData()">💾 Voorstellen opslaan</button>
+  <button class="btn btn-secondary" onclick="saveData()">💾 Voorstellen (lokaal)</button>
   <button class="btn btn-secondary" onclick="loadData()">📂 Herstellen</button>
 </div>
 
@@ -4020,14 +4037,65 @@
   try { if (localStorage.getItem('tcw_pm_j1_v2')) loadData(); } catch (e) {}
 </script>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-  /* NOTITIE-KOLOM — uitvoering & voorbereiding, per dag (gekoppeld aan de datum) */
+  /* =================== GEDEELDE AANTEKENINGEN (Supabase) ===================
+     Vul hieronder de twee gegevens uit je Supabase-project in.
+     Zolang ze leeg zijn werkt de pagina in 'lokale modus' (alleen op dit apparaat). */
+  const SUPA_URL   = 'https://libxvnvkwrouhtjwhaog.supabase.co';
+  const SUPA_KEY   = 'sb_publishable_cNstRq8MJ47xCSSxhAdJWw_WJxirzn6';
+  const SUPA_TABLE = 'notities';  // tabelnaam — laat zo staan
+  /* ======================================================================== */
+
   (function () {
     const NOTE_KEY = 'tcw_notitie_v1';
     let notes = {};
     try { notes = JSON.parse(localStorage.getItem(NOTE_KEY) || '{}'); } catch (e) { notes = {}; }
-    function saveNotes() { try { localStorage.setItem(NOTE_KEY, JSON.stringify(notes)); } catch (e) {} }
+    function saveLocal() { try { localStorage.setItem(NOTE_KEY, JSON.stringify(notes)); } catch (e) {} }
 
+    let dirtyKeys = [];
+    try { dirtyKeys = JSON.parse(localStorage.getItem(NOTE_KEY + '_dirty') || '[]'); } catch (e) {}
+    const dirty = new Set(dirtyKeys);
+    function persistDirty() { try { localStorage.setItem(NOTE_KEY + '_dirty', JSON.stringify(Array.from(dirty))); } catch (e) {} }
+
+    const cellApi = {};
+
+    let supa = null;
+    if (/^https?:\/\//.test(SUPA_URL) && SUPA_KEY && window.supabase) {
+      try { supa = window.supabase.createClient(SUPA_URL, SUPA_KEY); } catch (e) { supa = null; }
+    }
+
+    // ---- statusbalk ----
+    const dotEl = document.getElementById('syncDot');
+    const textEl = document.getElementById('syncText');
+    const btnPub = document.getElementById('btnPubliceren');
+    const btnPull = document.getElementById('btnOphalen');
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+    function nowTime() { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+    function setStatus(kind, msg) {
+      if (!dotEl) return;
+      const map = {
+        local:      ['',      'Lokale modus — alleen op dit apparaat (database nog niet ingesteld).'],
+        connecting: ['',      'Verbinden met gedeelde database…'],
+        synced:     ['ok',    'Verbonden — alles is gepubliceerd.'],
+        dirty:      ['dirty', ''],
+        publishing: ['',      'Publiceren…'],
+        published:  ['ok',    'Gepubliceerd om ' + nowTime() + '.'],
+        error:      ['err',   'Fout bij verbinden: ' + (msg || 'onbekend') + '. Wijzigingen staan lokaal bewaard.']
+      };
+      const entry = map[kind] || ['', msg || ''];
+      dotEl.className = 'sync-dot' + (entry[0] ? ' ' + entry[0] : '');
+      textEl.textContent = (kind === 'dirty')
+        ? (dirty.size + ' wijziging' + (dirty.size === 1 ? '' : 'en') + ' nog niet gepubliceerd')
+        : entry[1];
+    }
+    function refreshDirtyUi() {
+      if (btnPub) btnPub.textContent = dirty.size ? ('☁️ Publiceren (' + dirty.size + ')') : '☁️ Publiceren';
+      if (dirty.size) setStatus('dirty');
+    }
+    function markDirty(key) { dirty.add(key); persistDirty(); saveLocal(); refreshDirtyUi(); }
+
+    // ---- bouw de notitie-cellen ----
     document.querySelectorAll('.row-grid').forEach(function (grid) {
       const jaarEl = grid.querySelector('.datum-jaar');
       if (!jaarEl) return;
@@ -4064,6 +4132,9 @@
         else if (rec.loc === 'Bedrijf') inputEl.placeholder = 'Welk bedrijf?';
         else inputEl.placeholder = 'Welk bedrijf / locatie…';
       }
+      cellApi[key] = { refresh: function () {
+        inputEl.value = rec.naam || ''; areaEl.value = rec.voorb || ''; renderStatus(); renderLoc();
+      } };
       inputEl.value = rec.naam || '';
       areaEl.value = rec.voorb || '';
       renderStatus(); renderLoc();
@@ -4071,17 +4142,68 @@
       chips.forEach(function (c) {
         c.addEventListener('click', function () {
           rec.loc = (rec.loc === c.dataset.val) ? '' : c.dataset.val;
-          renderLoc(); saveNotes();
+          renderLoc(); markDirty(key);
         });
       });
       statusEl.addEventListener('click', function () {
         rec.status = (rec.status === 'done') ? 'open' : 'done';
-        renderStatus(); saveNotes();
+        renderStatus(); markDirty(key);
       });
-      inputEl.addEventListener('input', function () { rec.naam = inputEl.value; saveNotes(); });
-      areaEl.addEventListener('input', function () { rec.voorb = areaEl.value; saveNotes(); });
+      inputEl.addEventListener('input', function () { rec.naam = inputEl.value; markDirty(key); });
+      areaEl.addEventListener('input', function () { rec.voorb = areaEl.value; markDirty(key); });
     });
-    saveNotes();
+
+    // ---- cloud: ophalen & publiceren ----
+    async function pullFromCloud(force) {
+      if (!supa) { setStatus('local'); return; }
+      setStatus('connecting');
+      try {
+        const res = await supa.from(SUPA_TABLE).select('*');
+        if (res.error) throw res.error;
+        (res.data || []).forEach(function (row) {
+          if (!notes[row.datum]) return;            // alleen bekende dagen
+          if (!force && dirty.has(row.datum)) return; // bewaar lokale onopgeslagen wijziging
+          const r = notes[row.datum];
+          r.loc = row.loc || ''; r.naam = row.naam || ''; r.voorb = row.voorb || ''; r.status = row.status || 'open';
+          if (cellApi[row.datum]) cellApi[row.datum].refresh();
+        });
+        saveLocal();
+        if (force) { dirty.clear(); persistDirty(); }
+        refreshDirtyUi();
+        setStatus(dirty.size ? 'dirty' : 'synced');
+      } catch (e) { setStatus('error', e.message || e); }
+    }
+
+    async function publish() {
+      if (!supa) {
+        alert('De gedeelde database is nog niet ingesteld.\\n\\nVul bovenin het bestand SUPA_URL en SUPA_KEY in.\\nJe wijzigingen staan zolang lokaal bewaard.');
+        return;
+      }
+      if (!dirty.size) { setStatus('synced'); return; }
+      setStatus('publishing');
+      const rows = Array.from(dirty).map(function (k) {
+        const r = notes[k];
+        return { datum: k, loc: r.loc, naam: r.naam, voorb: r.voorb, status: r.status, updated_at: new Date().toISOString() };
+      });
+      try {
+        const res = await supa.from(SUPA_TABLE).upsert(rows, { onConflict: 'datum' });
+        if (res.error) throw res.error;
+        dirty.clear(); persistDirty();
+        if (btnPub) btnPub.textContent = '☁️ Publiceren';
+        setStatus('published');
+      } catch (e) { setStatus('error', e.message || e); }
+    }
+
+    if (btnPub) btnPub.addEventListener('click', publish);
+    if (btnPull) btnPull.addEventListener('click', function () {
+      if (dirty.size && !confirm('Je hebt ' + dirty.size + ' niet-gepubliceerde wijziging(en).\\nOphalen vervangt die door de online versie. Doorgaan?')) return;
+      pullFromCloud(true);
+    });
+
+    // ---- init ----
+    refreshDirtyUi();
+    saveLocal();
+    if (supa) pullFromCloud(false); else setStatus('local');
   })();
 </script>
 </body>
