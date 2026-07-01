@@ -3988,6 +3988,7 @@
   <button class="btn btn-secondary" onclick="window.print()">🖨️ Afdrukken / PDF</button>
   <button class="btn btn-primary" onclick="saveData()">💾 Voorstellen opslaan</button>
   <button class="btn btn-secondary" onclick="loadData()">📂 Herstellen</button>
+  <button class="btn btn-primary" onclick="maakDeelbaar()">📤 Deelbaar bestand maken</button>
 </div>
 
 <script>
@@ -4018,6 +4019,44 @@
     } catch (e) { alert('Herstellen lukt niet in deze omgeving.'); }
   }
   try { if (localStorage.getItem('tcw_pm_j1_v2')) loadData(); } catch (e) {}
+
+  /* Maakt een HTML-bestand waarin alle invulling vast in de pagina staat, zodat je het kunt mailen. */
+  function maakDeelbaar() {
+    try {
+      // 1. Oranje middag-tekstvakken vastzetten in de HTML
+      document.querySelectorAll('.middag-field').forEach(function (el) {
+        el.textContent = el.value;
+        el.setAttribute('data-vast', '1');
+      });
+      // 2. Notitie-kolom vastzetten (locatie, bedrijf, voorbereiding, status)
+      document.querySelectorAll('.cell-notitie').forEach(function (cell) {
+        var inp = cell.querySelector('.notitie-input');
+        var area = cell.querySelector('.notitie-area');
+        if (inp) inp.setAttribute('value', inp.value);
+        if (area) area.textContent = area.value;
+        var actieveChip = cell.querySelector('.notitie-chip.active');
+        if (actieveChip) cell.setAttribute('data-loc-vast', actieveChip.dataset.val);
+        var statusEl = cell.querySelector('.notitie-status');
+        if (statusEl) cell.setAttribute('data-status-vast', statusEl.classList.contains('done') ? 'done' : 'open');
+      });
+      // 3. Hele pagina als tekst ophalen
+      var html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      // 4. Downloaden als bestand
+      var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      var datum = new Date().toISOString().slice(0, 10);
+      a.href = url;
+      a.download = 'TCW_praktijkmiddagen_ingevuld_' + datum + '.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      alert('Klaar! Het bestand staat in je map Downloads.\n\nDit bestand bevat al je invulling en kun je als bijlage mailen naar de bedrijven.');
+    } catch (e) {
+      alert('Er ging iets mis bij het maken van het bestand. Gebruik anders Afdrukken / PDF.');
+    }
+  }
 </script>
 
 <script>
@@ -4033,6 +4072,17 @@
       if (!jaarEl) return;
       const key = jaarEl.textContent.trim();
       const rec = notes[key] || (notes[key] = { loc: '', naam: '', voorb: '', status: 'open' });
+      // Als dit een gedeeld bestand is met vastgezette waarden, die overnemen
+      const vastCell = grid.querySelector('.cell-notitie[data-loc-vast], .cell-notitie[data-status-vast]');
+      if (vastCell) {
+        if (vastCell.getAttribute('data-loc-vast')) rec.loc = vastCell.getAttribute('data-loc-vast');
+        if (vastCell.getAttribute('data-status-vast')) rec.status = vastCell.getAttribute('data-status-vast');
+        const vastInp = vastCell.querySelector('.notitie-input');
+        const vastArea = vastCell.querySelector('.notitie-area');
+        if (vastInp && vastInp.getAttribute('value')) rec.naam = vastInp.getAttribute('value');
+        if (vastArea && vastArea.textContent.trim()) rec.voorb = vastArea.textContent.trim();
+        vastCell.remove();
+      }
 
       const cell = document.createElement('div');
       cell.className = 'cell cell-notitie';
